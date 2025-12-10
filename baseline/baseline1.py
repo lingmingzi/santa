@@ -1,0 +1,29 @@
+import argparse
+
+from runner import optimize_pipeline
+from validation import score_and_validate_submission
+
+
+def main():
+    parser = argparse.ArgumentParser(description="GPU/CPU baseline optimizer and validator")
+    parser.add_argument('--mode', choices=['optimize', 'validate'], default='optimize',
+                        help="Run optimization or validate an existing submission")
+    parser.add_argument('--input', default='../clafy_tree/sample_submission.csv',
+                        help="Input submission CSV (default uses sample_submission)")
+    parser.add_argument('--output', default='submission.csv', help="Output CSV for optimized results")
+    parser.add_argument('--limit', type=int, nargs='*', default=None,
+                        help="Optional list of N values to process (optimize mode)")
+    parser.add_argument('--iters', type=int, default=20, help="Simulated annealing iterations (optimize mode)")
+    parser.add_argument('--restarts', type=int, default=10, help="Restart count (optimize mode)")
+    parser.add_argument('--max-n', type=int, default=200, help="Maximum N to validate (validate mode)")
+    args = parser.parse_args()
+    if args.mode == 'optimize':
+        optimize_pipeline(limit_n=args.limit, input_file=args.input, output_file=args.output,
+                          iters=args.iters, restarts=args.restarts)
+    else:
+        result = score_and_validate_submission(args.input, max_n=args.max_n)
+        print(result)
+
+
+if __name__ == '__main__':
+    main()
