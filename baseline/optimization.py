@@ -3,15 +3,103 @@ import numpy as np
 from geometry import calc_side_auto as calc_side, check_overlap_single, find_corner_trees, get_global_bbox
 
 
-# --- Deterministic tiling based on precomputed mirror pair ---
-# Mirror pair parameters (tightest found by offline search)
+# --- Deterministic tiling based on (auto-tuned) mirror pair ---
+# Default pair parameters (previous best from offline search)
 PAIR_DX = 0.435
 PAIR_DY = -0.46
 PAIR_W = 1.135  # approximate AABB width of the pair
 PAIR_H = 1.46   # approximate AABB height of the pair
 
+# Cache for small auto-tuning of pair offsets to reduce bbox
+_PAIR_CACHE = {}
+# Optional override from high-scoring submission
+_PAIR_OVERRIDE = None
 
-def build_mirror_pair_positions(n: int):
+
+def set_pair_override(dx: float, dy: float):
+    global _PAIR_OVERRIDE
+    _PAIR_OVERRIDE = (dx, dy)
+
+
+def tune_pair_from_submission(csv_path: str):
+    """Extract a pair offset guess from a submission (use n=2 rows if present).
+
+    Heuristic: use the vector between the two trees of the n=2 case; fall back to median
+    nearest-neighbor vector for the smallest n present. This is lightweight and avoids
+    heavy search; intended to seed the deterministic tiling.
+    """
+    try:
+        import pandas as pd
+        df = pd.read_csv(csv_path)
+        df['n'] = df['id'].str.slice(0, 3).astype(int)
+        df['idx'] = df['id'].str.split('_').str[1].astype(int)
+        # prefer n=2
+        if (df['n'] == 2).any():
+            sub = df[df['n'] == 2].sort_values('idx')
+        else:
+            n_min = df['n'].min()
+            sub = df[df['n'] == n_min].sort_values('idx')
+        xs = sub['x'].astype(str).str.lstrip('s').astype(float).to_numpy()
+        ys = sub['y'].astype(str).str.lstrip('s').astype(float).to_numpy()
+        if len(xs) >= 2:
+            dx = xs[1] - xs[0]
+            dy = ys[1] - ys[0]
+            set_pair_override(dx, dy)
+            return dx, dy
+        # fallback: try nearest-neighbor median
+        from scipy.spatial import KDTree  # only if available
+        pts = np.column_stack([xs, ys])
+        tree = KDTree(pts)
+        dists, idxs = tree.query(pts, k=2)
+        vectors = pts[idxs[:, 1]] - pts
+        dx = np.median(vectors[:, 0])
+        dy = np.median(vectors[:, 1])
+        set_pair_override(dx, dy)
+        return dx, dy
+    except Exception:
+        return None
+
+
+def select_pair_params(n: int):
+    """Lightweight coarse search over (dx, dy) to tighten the tiling seed.
+
+    - Only runs a small grid search; cached per coarse bucket of n.
+    - Uses calc_side_auto to keep GPU acceleration when available.
+    - Falls back to defaults if anything fails.
+    """
+    try:
+        # bucket by size to avoid repeated work
+        if n <= 10:
+            bucket = 10
+        elif n <= 40:
+            bucket = 40
+        elif n <= 100:
+            bucket = 100
+        else:
+            bucket = 200
+        if bucket in _PAIR_CACHE:
+            return _PAIR_CACHE[bucket]
+
+        sample_n = min(60, n)
+        base_dx, base_dy = _PAIR_OVERRIDE if _PAIR_OVERRIDE is not None else (PAIR_DX, PAIR_DY)
+        dx_candidates = np.linspace(base_dx - 0.05, base_dx + 0.05, 5)
+        dy_candidates = np.linspace(base_dy - 0.05, base_dy + 0.05, 5)
+        best = (base_dx, base_dy)
+        best_side = None
+        for dx in dx_candidates:
+            for dy in dy_candidates:
+                xs, ys, angs = build_mirror_pair_positions(sample_n, dx, dy, PAIR_W, PAIR_H)
+                side = calc_side(xs, ys, angs, sample_n)
+                if (best_side is None) or (side < best_side):
+                    best_side = side
+                    best = (dx, dy)
+        _PAIR_CACHE[bucket] = best
+        return best
+    except Exception:
+        return (PAIR_DX, PAIR_DY)
+
+
+def build_mirror_pair_positions(n: int, pair_dx=PAIR_DX, pair_dy=PAIR_DY, pair_w=PAIR_W, pair_h=PAIR_H):
     """Build deterministic layout using mirrored pairs in staggered rows.
 
     Strategy:
@@ -53,12 +141,12 @@ def build_mirror_pair_positions(n: int):
 
     idx = 0
     for r in range(rows):
-        row_offset = 0.5 * PAIR_W if (stagger and (r % 2 == 1)) else 0.0
+        row_offset = 0.5 * pair_w if (stagger and (r % 2 == 1)) else 0.0
         for c in range(cols):
             if idx >= n:
                 break
-            base_x = c * PAIR_W + row_offset
-            base_y = r * PAIR_H
+            base_x = c * pair_w + row_offset
+            base_y = r * pair_h
             # tree A
             xs[idx] = base_x
             ys[idx] = base_y
@@ -67,8 +155,8 @@ def build_mirror_pair_positions(n: int):
             if idx >= n:
                 break
             # tree B mirrored and shifted
-            xs[idx] = base_x + PAIR_DX
-            ys[idx] = base_y + PAIR_DY
+            xs[idx] = base_x + pair_dx
+            ys[idx] = base_y + pair_dy
             angs[idx] = 0.0
             idx += 1
         if idx >= n:
@@ -309,8 +397,9 @@ def optimize_config(n, xs, ys, angs, num_restarts, sa_iters, fast_only=False):
     for lower CPU usage (useful on Kaggle when GPU is underutilized).
     """
 
-    # deterministic seed using mirror tiling
-    seed_xs, seed_ys, seed_angs = build_mirror_pair_positions(n)
+    # deterministic seed using mirror tiling (auto-tuned pair params per n bucket)
+    pair_dx, pair_dy = select_pair_params(n)
+    seed_xs, seed_ys, seed_angs = build_mirror_pair_positions(n, pair_dx, pair_dy, PAIR_W, PAIR_H)
     seed_side = calc_side(seed_xs, seed_ys, seed_angs, n)
     init_side = calc_side(xs, ys, angs, n)
     if seed_side < init_side:

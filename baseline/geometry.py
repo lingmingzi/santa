@@ -10,9 +10,27 @@ TREE_Y = np.array([0.8, 0.5, 0.5, 0.25, 0.25, 0, 0, -0.2,
                    -0.2, 0, 0, 0.25, 0.25, 0.5, 0.5], dtype=np.float64)
 NV = 15
 
-# GPU launch configuration (tuned for P100-like GPUs)
-PAIR_THREADS = (32, 16)  # 512 threads per block for pairwise overlap
+# GPU launch configuration (balanced to avoid resource overuse)
+PAIR_THREADS = (16, 16)  # 256 threads per block for pairwise overlap
 BBOX_THREADS = 256       # 256 threads per block for bbox kernel
+GPU_MIN_N = 32           # below this, prefer CPU to avoid tiny grids/overheads
+FORCE_GPU = False        # if True, always attempt GPU path when CUDA is available
+
+
+def configure_gpu_threads(pair_block_x: int = None, pair_block_y: int = None,
+                          bbox_threads: int = None, gpu_min_n: int = None,
+                          force_gpu: bool = None):
+    global PAIR_THREADS, BBOX_THREADS, GPU_MIN_N, FORCE_GPU
+    if pair_block_x and pair_block_y:
+        PAIR_THREADS = (int(pair_block_x), int(pair_block_y))
+    if bbox_threads:
+        BBOX_THREADS = int(bbox_threads)
+    if gpu_min_n is not None:
+        GPU_MIN_N = int(gpu_min_n)
+    if force_gpu is not None:
+        FORCE_GPU = bool(force_gpu)
+        if FORCE_GPU:
+            GPU_MIN_N = 0
 
 
 # --- CUDA device helpers ---
@@ -198,6 +216,8 @@ def calc_side(xs, ys, angs, n):
 def calc_side_gpu(xs, ys, angs, n):
     if n == 0:
         return 0.0
+    if n < GPU_MIN_N:
+        return calc_side(xs, ys, angs, n)
     # allocate device buffers once per call; data copies dominate but move bbox math to GPU
     d_xs = cuda.to_device(xs[:n])
     d_ys = cuda.to_device(ys[:n])
@@ -218,7 +238,8 @@ def calc_side_gpu(xs, ys, angs, n):
 def calc_side_auto(xs, ys, angs, n):
     try:
         if cuda.is_available():
-            return calc_side_gpu(xs, ys, angs, n)
+            if FORCE_GPU or n >= GPU_MIN_N:
+                return calc_side_gpu(xs, ys, angs, n)
     except Exception:
         pass
     return calc_side(xs, ys, angs, n)
@@ -296,7 +317,7 @@ def check_overlap_single(idx: int, xs: np.ndarray, ys: np.ndarray, angs: np.ndar
         gpu_available = cuda.is_available()
     except Exception:
         gpu_available = False
-    if not gpu_available:
+    if (not gpu_available) or ((not FORCE_GPU) and n < GPU_MIN_N):
         px1, py1 = get_poly(xs[idx], ys[idx], angs[idx])
         bb1 = (px1.min(), py1.min(), px1.max(), py1.max())
         for j in range(n):
