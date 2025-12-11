@@ -1,16 +1,27 @@
 import argparse
+import sys
+from pathlib import Path
 
 from runner import optimize_pipeline
 from validation import score_and_validate_submission
 
 
 def main():
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except Exception:
+        pass
+
+    base_dir = Path(__file__).resolve().parent
+    default_input = base_dir / 'sample_submission.csv'
+    default_output = base_dir / 'submission.csv'
+
     parser = argparse.ArgumentParser(description="GPU/CPU baseline optimizer and validator")
     parser.add_argument('--mode', choices=['optimize', 'validate'], default='optimize',
                         help="Run optimization or validate an existing submission")
-    parser.add_argument('--input', default='../clafy_tree/sample_submission.csv',
-                        help="Input submission CSV (default uses sample_submission)")
-    parser.add_argument('--output', default='submission.csv', help="Output CSV for optimized results")
+    parser.add_argument('--input', default=str(default_input),
+                        help="Input submission CSV (default uses baseline/sample_submission.csv)")
+    parser.add_argument('--output', default=str(default_output), help="Output CSV for optimized results")
     parser.add_argument('--limit', type=int, nargs='*', default=None,
                         help="Optional list of N values to process (optimize mode)")
     parser.add_argument('--iters', type=int, default=20, help="Simulated annealing iterations (optimize mode)")

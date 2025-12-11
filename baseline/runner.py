@@ -22,29 +22,30 @@ def optimize_pipeline(limit_n: Optional[List[int]] = None,
             print("=" * 70)
     except Exception as e:
         print(f"Error checking CUDA availability: {e}. Proceeding.")
-    print(f"Loading {input_file}...")
+    print(f"Loading {input_file}...", flush=True)
     configs = load_csv(input_file)
-    all_tasks = sorted([n for n in configs], reverse=True)
+    all_tasks = sorted([n for n in configs])
     if limit_n:
         tasks = [n for n in all_tasks if n in limit_n]
-        print(f"Loaded {len(configs)} configurations. Optimizing subset: {tasks}")
+        print(f"Loaded {len(configs)} configurations. Optimizing subset: {tasks}", flush=True)
     else:
         tasks = all_tasks
-        print(f"Loaded {len(configs)} configurations. Optimizing all {len(tasks)} tasks.")
+        print(f"Loaded {len(configs)} configurations. Optimizing all {len(tasks)} tasks.", flush=True)
     if not tasks:
         print("No tasks selected for optimization. Exiting.")
         return {}
     initial_score_all = sum(calc_side(configs[n]['x'], configs[n]['y'], configs[n]['deg'], n)**2 / n
                              for n in configs)
-    print(f"Initial overall score (N=1 to 200): {initial_score_all:.6f}")
-    print(f"\nOptimization Parameters: SA Iters={iters}, Restarts={restarts}")
-    print("=" * 100)
-    print(f"| {'N':<3} | {'Initial Side':<14} | {'Optimized Side':<14} | {'Initial Score':<14} | {'Optimized Score':<14} | {'Improvement %':<15} | {'Running Total Score':<19} |")
-    print("=" * 100)
+    print(f"Initial overall score (N=1 to 200): {initial_score_all:.6f}", flush=True)
+    print(f"\nOptimization Parameters: SA Iters={iters}, Restarts={restarts}", flush=True)
+    print("=" * 100, flush=True)
+    print(f"| {'N':<3} | {'Initial Side':<14} | {'Optimized Side':<14} | {'Initial Score':<14} | {'Optimized Score':<14} | {'Improvement %':<15} | {'Running Total Score':<19} |", flush=True)
+    print("=" * 100, flush=True)
     t0 = time.time()
     final_configs = configs.copy()
     current_total_score = initial_score_all
     for n in tasks:
+        print(f"Starting N={n}...", flush=True)
         xs = configs[n]['x'][:n].copy()
         ys = configs[n]['y'][:n].copy()
         angs = configs[n]['deg'][:n].copy()
@@ -68,11 +69,11 @@ def optimize_pipeline(limit_n: Optional[List[int]] = None,
         final_configs[n] = result_dict
         improvement_pct = (old_score_contrib - new_score_contrib) / old_score_contrib * 100 if old_score_contrib > 1e-9 else 0.0
         status_msg = "Improved" if improvement_pct > 1e-4 else "No change"
-        print(f"| {n:<3} | {old_side:<14.8f} | {new_side:<14.8f} | {old_score_contrib:<14.8f} | {new_score_contrib:<14.8f} | {improvement_pct:<15.4f} | {current_total_score:<19.8f} | {status_msg}")
+        print(f"| {n:<3} | {old_side:<14.8f} | {new_side:<14.8f} | {old_score_contrib:<14.8f} | {new_score_contrib:<14.8f} | {improvement_pct:<15.4f} | {current_total_score:<19.8f} | {status_msg}", flush=True)
     elapsed = time.time() - t0
-    print("=" * 100)
-    print(f"Total optimization time: {elapsed:.1f}s")
-    print(f"Final Score (All N):   {current_total_score:.6f}")
+    print("=" * 100, flush=True)
+    print(f"Total optimization time: {elapsed:.1f}s", flush=True)
+    print(f"Final Score (All N):   {current_total_score:.6f}", flush=True)
     save_csv(output_file, final_configs)
-    print(f"Saved optimized results to {output_file}")
+    print(f"Saved optimized results to {output_file}", flush=True)
     return final_configs

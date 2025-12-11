@@ -3,6 +3,87 @@ import numpy as np
 from geometry import calc_side, check_overlap_single, find_corner_trees, get_global_bbox
 
 
+# --- Deterministic tiling based on precomputed mirror pair ---
+# Mirror pair parameters (tightest found by offline search)
+PAIR_DX = 0.435
+PAIR_DY = -0.46
+PAIR_W = 1.135  # approximate AABB width of the pair
+PAIR_H = 1.46   # approximate AABB height of the pair
+
+
+def build_mirror_pair_positions(n: int):
+    """Build deterministic layout using mirrored pairs in staggered rows.
+
+    Strategy:
+    - Use two-tree cell: tree A at (0, 0, 0), tree B mirrored and shifted by (PAIR_DX, PAIR_DY, 0).
+    - Arrange cells in staggered rows to reduce width: odd rows offset by half cell width.
+    - Choose rows/cols near sqrt(cells) to minimize square side.
+    - Works for any n (last lone tree placed at end of grid).
+    """
+    cells = (n + 1) // 2  # number of two-tree cells needed
+    if cells == 0:
+        return np.zeros(0), np.zeros(0), np.zeros(0)
+
+    best = None
+    k = 4  # neighborhood around sqrt
+    root = int(np.sqrt(cells))
+    candidates = []
+    for r in range(max(1, root - k), root + k + 1):
+        c = (cells + r - 1) // r
+        candidates.append((r, c))
+
+    def layout_size(rows, cols, stagger):
+        width = cols * PAIR_W
+        if stagger and rows > 1:
+            width += 0.5 * PAIR_W  # due to half-cell offset on staggered rows
+        height = rows * PAIR_H
+        return max(width, height), width, height
+
+    for rows, cols in candidates:
+        for stagger in (False, True):
+            s, w, h = layout_size(rows, cols, stagger)
+            if (best is None) or (s < best[0]):
+                best = (s, rows, cols, stagger, w, h)
+
+    _, rows, cols, stagger, _, _ = best
+
+    xs = np.zeros(n)
+    ys = np.zeros(n)
+    angs = np.zeros(n)
+
+    idx = 0
+    for r in range(rows):
+        row_offset = 0.5 * PAIR_W if (stagger and (r % 2 == 1)) else 0.0
+        for c in range(cols):
+            if idx >= n:
+                break
+            base_x = c * PAIR_W + row_offset
+            base_y = r * PAIR_H
+            # tree A
+            xs[idx] = base_x
+            ys[idx] = base_y
+            angs[idx] = 0.0
+            idx += 1
+            if idx >= n:
+                break
+            # tree B mirrored and shifted
+            xs[idx] = base_x + PAIR_DX
+            ys[idx] = base_y + PAIR_DY
+            angs[idx] = 0.0
+            idx += 1
+        if idx >= n:
+            break
+
+    # Center the layout around origin to reduce bbox size
+    if n > 0:
+        xs_mean = xs.mean()
+        ys_mean = ys.mean()
+        xs -= xs_mean
+        ys -= ys_mean
+
+    return xs, ys, angs
+
+
 def sa_v3(xs, ys, angs, n, iterations, T0, Tmin, move_scale, rot_scale, seed):
     np.random.seed(seed)
     bxs, bys, bangs = xs.copy(), ys.copy(), angs.copy()
@@ -222,13 +303,27 @@ def perturb(xs, ys, angs, n, strength, seed):
 
 
 def optimize_config(n, xs, ys, angs, num_restarts, sa_iters):
-    best_xs, best_ys, best_angs = xs.copy(), ys.copy(), angs.copy()
+    """Hybrid: deterministic tiling seed + SA/local refinement."""
+
+    # deterministic seed using mirror tiling
+    seed_xs, seed_ys, seed_angs = build_mirror_pair_positions(n)
+    seed_side = calc_side(seed_xs, seed_ys, seed_angs, n)
+    init_side = calc_side(xs, ys, angs, n)
+    if seed_side < init_side:
+        xs0, ys0, angs0 = seed_xs, seed_ys, seed_angs
+    else:
+        xs0, ys0, angs0 = xs.copy(), ys.copy(), angs.copy()
+
+    best_xs, best_ys, best_angs = xs0.copy(), ys0.copy(), angs0.copy()
     best_side = calc_side(best_xs, best_ys, best_angs, n)
-    population = [(xs.copy(), ys.copy(), angs.copy(), best_side)]
+
+    population = [(xs0.copy(), ys0.copy(), angs0.copy(), best_side)]
+    # also keep the original input as fallback candidate
+    if init_side < best_side:
+        population.append((xs.copy(), ys.copy(), angs.copy(), init_side))
+
     for r in range(num_restarts):
-        if r == 0:
-            start_xs, start_ys, start_angs = xs.copy(), ys.copy(), angs.copy()
-        elif r < len(population):
+        if r < len(population):
             px, py, pa, _ = population[r % len(population)]
             start_xs, start_ys, start_angs = px.copy(), py.copy(), pa.copy()
         else:
