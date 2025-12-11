@@ -4,7 +4,7 @@ from typing import List, Optional
 import numpy as np
 from numba import cuda
 
-from geometry import calc_side
+from geometry import calc_side_auto as calc_side
 from io_utils import load_csv, save_csv
 from optimization import optimize_config
 
@@ -13,7 +13,8 @@ def optimize_pipeline(limit_n: Optional[List[int]] = None,
                       input_file: str = 'submission.csv',
                       output_file: str = 'submission.csv',
                       iters: int = 20,
-                      restarts: int = 10):
+                      restarts: int = 10,
+                      fast_only: bool = False):
     try:
         if not cuda.is_available():
             print("=" * 70)
@@ -37,7 +38,7 @@ def optimize_pipeline(limit_n: Optional[List[int]] = None,
     initial_score_all = sum(calc_side(configs[n]['x'], configs[n]['y'], configs[n]['deg'], n)**2 / n
                              for n in configs)
     print(f"Initial overall score (N=1 to 200): {initial_score_all:.6f}", flush=True)
-    print(f"\nOptimization Parameters: SA Iters={iters}, Restarts={restarts}", flush=True)
+    print(f"\nOptimization Parameters: SA Iters={iters}, Restarts={restarts}, FastOnly={fast_only}", flush=True)
     print("=" * 100, flush=True)
     print(f"| {'N':<3} | {'Initial Side':<14} | {'Optimized Side':<14} | {'Initial Score':<14} | {'Optimized Score':<14} | {'Improvement %':<15} | {'Running Total Score':<19} |", flush=True)
     print("=" * 100, flush=True)
@@ -59,7 +60,8 @@ def optimize_pipeline(limit_n: Optional[List[int]] = None,
         elif n > 150:
             current_restarts = restarts * 2
             current_iters = iters * 2
-        opt_xs, opt_ys, opt_angs, new_side = optimize_config(n, xs, ys, angs, current_restarts, current_iters)
+        opt_xs, opt_ys, opt_angs, new_side = optimize_config(
+            n, xs, ys, angs, current_restarts, current_iters, fast_only=fast_only)
         new_score_contrib = new_side**2 / n
         current_total_score = current_total_score - old_score_contrib + new_score_contrib
         result_dict = {'x': np.zeros(200), 'y': np.zeros(200), 'deg': np.zeros(200)}

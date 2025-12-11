@@ -1,6 +1,6 @@
 import numpy as np
 
-from geometry import calc_side, check_overlap_single, find_corner_trees, get_global_bbox
+from geometry import calc_side_auto as calc_side, check_overlap_single, find_corner_trees, get_global_bbox
 
 
 # --- Deterministic tiling based on precomputed mirror pair ---
@@ -302,8 +302,12 @@ def perturb(xs, ys, angs, n, strength, seed):
     return pxs, pys, pangs
 
 
-def optimize_config(n, xs, ys, angs, num_restarts, sa_iters):
-    """Hybrid: deterministic tiling seed + SA/local refinement."""
+def optimize_config(n, xs, ys, angs, num_restarts, sa_iters, fast_only=False):
+    """Hybrid: deterministic tiling seed + SA/local refinement.
+
+    fast_only=True skips SA/local search and returns the deterministic tiling seed directly
+    for lower CPU usage (useful on Kaggle when GPU is underutilized).
+    """
 
     # deterministic seed using mirror tiling
     seed_xs, seed_ys, seed_angs = build_mirror_pair_positions(n)
@@ -316,6 +320,9 @@ def optimize_config(n, xs, ys, angs, num_restarts, sa_iters):
 
     best_xs, best_ys, best_angs = xs0.copy(), ys0.copy(), angs0.copy()
     best_side = calc_side(best_xs, best_ys, best_angs, n)
+
+    if fast_only:
+        return best_xs, best_ys, best_angs, best_side
 
     population = [(xs0.copy(), ys0.copy(), angs0.copy(), best_side)]
     # also keep the original input as fallback candidate

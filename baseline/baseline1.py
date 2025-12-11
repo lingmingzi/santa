@@ -26,11 +26,13 @@ def main():
                         help="Optional list of N values to process (optimize mode)")
     parser.add_argument('--iters', type=int, default=20, help="Simulated annealing iterations (optimize mode)")
     parser.add_argument('--restarts', type=int, default=10, help="Restart count (optimize mode)")
+    parser.add_argument('--fast-tiling-only', action='store_true',
+                        help="Skip SA/local search; return deterministic tiling seed (lower CPU use)")
     parser.add_argument('--max-n', type=int, default=200, help="Maximum N to validate (validate mode)")
     args = parser.parse_args()
     if args.mode == 'optimize':
         optimize_pipeline(limit_n=args.limit, input_file=args.input, output_file=args.output,
-                          iters=args.iters, restarts=args.restarts)
+                  iters=args.iters, restarts=args.restarts, fast_only=args.fast_tiling_only)
     else:
         result = score_and_validate_submission(args.input, max_n=args.max_n)
         print(result)

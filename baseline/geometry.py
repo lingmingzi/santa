@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 from numba import cuda, float64, int32, njit, prange
 
@@ -100,6 +102,58 @@ def overlap_check_kernel(idx, n, xs, ys, angs, is_overlapping_out):
         cuda.atomic.max(is_overlapping_out, 0, 1)
 
 
+@cuda.jit
+def overlap_any_kernel(xs, ys, angs, n, is_overlapping_out):
+    # 2D grid over pairs (i, j); only evaluate i < j
+    i = cuda.blockIdx.x * cuda.blockDim.x + cuda.threadIdx.x
+    j = cuda.blockIdx.y * cuda.blockDim.y + cuda.threadIdx.y
+    if i >= n or j >= n or i >= j:
+        return
+    px1 = cuda.local.array(NV, float64)
+    py1 = cuda.local.array(NV, float64)
+    px2 = cuda.local.array(NV, float64)
+    py2 = cuda.local.array(NV, float64)
+    bb1 = cuda.local.array(4, float64)
+    bb2 = cuda.local.array(4, float64)
+    get_poly_device(xs[i], ys[i], angs[i], px1, py1)
+    get_bbox_device(px1, py1, bb1)
+    get_poly_device(xs[j], ys[j], angs[j], px2, py2)
+    get_bbox_device(px2, py2, bb2)
+    if overlap_device(px1, py1, bb1, px2, py2, bb2):
+        cuda.atomic.max(is_overlapping_out, 0, 1)
+
+
+@cuda.jit
+def bbox_kernel(xs, ys, angs, bboxes, n):
+    i = cuda.grid(1)
+    if i >= n:
+        return
+    rad = angs[i] * math.pi / 180.0
+    c = math.cos(rad)
+    s = math.sin(rad)
+    x0 = 1e9
+    y0 = 1e9
+    x1 = -1e9
+    y1 = -1e9
+    for k in range(NV):
+        tx = TREE_X[k]
+        ty = TREE_Y[k]
+        px = tx * c - ty * s + xs[i]
+        py = tx * s + ty * c + ys[i]
+        if px < x0:
+            x0 = px
+        if py < y0:
+            y0 = py
+        if px > x1:
+            x1 = px
+        if py > y1:
+            y1 = py
+    bboxes[i, 0] = x0
+    bboxes[i, 1] = y0
+    bboxes[i, 2] = x1
+    bboxes[i, 3] = y1
+
+
 # --- CPU helpers ---
 @njit(cache=True)
 def get_poly(cx, cy, deg):
@@ -135,6 +189,35 @@ def calc_side(xs, ys, angs, n):
     gx1 = x_max_arr.max()
     gy1 = y_max_arr.max()
     return max(gx1 - gx0, gy1 - gy0)
+
+
+def calc_side_gpu(xs, ys, angs, n):
+    if n == 0:
+        return 0.0
+    # allocate device buffers once per call; data copies dominate but move bbox math to GPU
+    d_xs = cuda.to_device(xs[:n])
+    d_ys = cuda.to_device(ys[:n])
+    d_angs = cuda.to_device(angs[:n])
+    d_bboxes = cuda.device_array((n, 4), dtype=np.float64)
+    threads_per_block = 128
+    blocks_per_grid = (n + threads_per_block - 1) // threads_per_block
+    bbox_kernel[blocks_per_grid, threads_per_block](d_xs, d_ys, d_angs, d_bboxes, n)
+    cuda.synchronize()
+    bboxes = d_bboxes.copy_to_host()
+    gx0 = bboxes[:, 0].min()
+    gy0 = bboxes[:, 1].min()
+    gx1 = bboxes[:, 2].max()
+    gy1 = bboxes[:, 3].max()
+    return max(gx1 - gx0, gy1 - gy0)
+
+
+def calc_side_auto(xs, ys, angs, n):
+    try:
+        if cuda.is_available():
+            return calc_side_gpu(xs, ys, angs, n)
+    except Exception:
+        pass
+    return calc_side(xs, ys, angs, n)
 
 
 @njit(cache=True)
@@ -220,15 +303,16 @@ def check_overlap_single(idx: int, xs: np.ndarray, ys: np.ndarray, angs: np.ndar
             if overlap_cpu(px1, py1, bb1, px2, py2, bb2):
                 return True
         return False
-    # GPU path
+    # GPU path: check all pairs in one kernel to increase GPU utilization and reduce Python/CPU work
     is_overlapping_out = np.zeros(1, dtype=np.int32)
     d_is_overlapping_out = cuda.to_device(is_overlapping_out)
-    threads_per_block = 128
-    blocks_per_grid = (n + threads_per_block - 1) // threads_per_block
     d_xs = cuda.to_device(xs)
     d_ys = cuda.to_device(ys)
     d_angs = cuda.to_device(angs)
-    overlap_check_kernel[blocks_per_grid, threads_per_block](idx, n, d_xs, d_ys, d_angs, d_is_overlapping_out)
+    threads_per_block = (16, 16)
+    blocks_per_grid = ((n + threads_per_block[0] - 1) // threads_per_block[0],
+                       (n + threads_per_block[1] - 1) // threads_per_block[1])
+    overlap_any_kernel[blocks_per_grid, threads_per_block](d_xs, d_ys, d_angs, n, d_is_overlapping_out)
     cuda.synchronize()
     d_is_overlapping_out.copy_to_host(is_overlapping_out)
     return bool(is_overlapping_out[0])
