@@ -10,6 +10,10 @@ TREE_Y = np.array([0.8, 0.5, 0.5, 0.25, 0.25, 0, 0, -0.2,
                    -0.2, 0, 0, 0.25, 0.25, 0.5, 0.5], dtype=np.float64)
 NV = 15
 
+# GPU launch configuration (tuned for P100-like GPUs)
+PAIR_THREADS = (32, 16)  # 512 threads per block for pairwise overlap
+BBOX_THREADS = 256       # 256 threads per block for bbox kernel
+
 
 # --- CUDA device helpers ---
 @cuda.jit(device=True)
@@ -199,7 +203,7 @@ def calc_side_gpu(xs, ys, angs, n):
     d_ys = cuda.to_device(ys[:n])
     d_angs = cuda.to_device(angs[:n])
     d_bboxes = cuda.device_array((n, 4), dtype=np.float64)
-    threads_per_block = 128
+    threads_per_block = BBOX_THREADS
     blocks_per_grid = (n + threads_per_block - 1) // threads_per_block
     bbox_kernel[blocks_per_grid, threads_per_block](d_xs, d_ys, d_angs, d_bboxes, n)
     cuda.synchronize()
@@ -309,7 +313,7 @@ def check_overlap_single(idx: int, xs: np.ndarray, ys: np.ndarray, angs: np.ndar
     d_xs = cuda.to_device(xs)
     d_ys = cuda.to_device(ys)
     d_angs = cuda.to_device(angs)
-    threads_per_block = (16, 16)
+    threads_per_block = PAIR_THREADS
     blocks_per_grid = ((n + threads_per_block[0] - 1) // threads_per_block[0],
                        (n + threads_per_block[1] - 1) // threads_per_block[1])
     overlap_any_kernel[blocks_per_grid, threads_per_block](d_xs, d_ys, d_angs, n, d_is_overlapping_out)
